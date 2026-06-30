@@ -1,0 +1,40 @@
+{
+  "name": "@orbitalfoundation/filespace",
+  "version": "0.1.0",
+  "description": "A multiuser, identity-owned, path-addressed shared filespace, implemented as a listener on the orbital bus.",
+  "type": "module",
+  "main": "src/index.js",
+  "bin": {
+    "filespace": "bin/filespace.js"
+  },
+  "files": [
+    "src",
+    "bin",
+    "example",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --preserve-symlinks --test",
+    "cli": "node --preserve-symlinks bin/filespace.js"
+  },
+  "keywords": [
+    "orbital",
+    "filespace",
+    "namespace",
+    "bus",
+    "collaboration",
+    "web3"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/orbitalfoundation/orbital-filespace.git"
+  },
+  "dependencies": {
+    "@orbitalfoundation/bus": "^2.0.1",
+    "@orbitalfoundation/utils": "^2.0.0"
+  }
+}

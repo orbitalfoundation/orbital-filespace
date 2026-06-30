@@ -1,0 +1,22 @@
+{
+  "entities": [
+    {
+      "slug": "/drwobbles/library",
+      "owner": "drwobbles",
+      "policy": "protected",
+      "components": {
+        "about": { "label": "Wobbles' Library", "description": "Protected — readable by guests, writable by members" }
+      }
+    },
+    {
+      "slug": "/drwobbles/library/orbital",
+      "owner": "drwobbles",
+      "policy": "protected",
+      "components": {
+        "about": { "label": "Orbital Foundation" },
+        "link": { "href": "https://example.org/orbital" },
+        "geo": { "ll": [-122.4194, 37.7749, 0] }
+      }
+    }
+  ]
+}

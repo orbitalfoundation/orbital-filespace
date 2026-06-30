@@ -1,0 +1,17 @@
+{
+  "entities": [
+    {
+      "slug": "/drwobbles",
+      "owner": "drwobbles",
+      "policy": "public",
+      "members": [{ "who": "drwobbles", "role": "owner" }],
+      "components": {
+        "about": {
+          "label": "Dr. Wobbles",
+          "description": "Retired orbital traffic controller. Now simulates civic catastrophes for fun."
+        }
+      }
+    }
+  ],
+  "children": ["playground", "library"]
+}

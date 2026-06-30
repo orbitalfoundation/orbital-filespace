@@ -1,0 +1,12 @@
+{
+  "entities": [
+    {
+      "slug": "/",
+      "policy": "public",
+      "components": {
+        "about": { "label": "Home", "description": "Root of the namespace" }
+      }
+    }
+  ],
+  "children": ["drwobbles"]
+}

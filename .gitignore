@@ -1,0 +1,5 @@
+node_modules/
+.filespace/
+*.log
+.DS_Store
+

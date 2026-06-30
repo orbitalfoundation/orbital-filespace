@@ -1,0 +1,13 @@
+{
+  "entities": [
+    {
+      "slug": "/drwobbles/playground",
+      "owner": "drwobbles",
+      "policy": "public",
+      "components": {
+        "about": { "label": "The Wobble Zone", "description": "A public jam space. Bring snacks.", "view": "chat" },
+        "geo": { "ll": [-16.2518, 28.4636, 0] }
+      }
+    }
+  ]
+}
