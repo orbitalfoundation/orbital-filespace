@@ -96,12 +96,47 @@ area, so membership granted on `/drwobbles` applies to everything beneath it.
 | administer    | ✓ | — | — | — | — |
 
 `enforce: false` skips these checks (the "allow-all" posture for early
-development). The rules live in [`src/policy.js`](src/policy.js) as pure functions
-so the edge auth-gateway can consult them without duplicating logic.
+development). The rules live in [`src/policy.js`](src/policy.js) as pure functions.
 
-> **Security note.** A `principal` must be the *server-verified* identity. The edge
-> (a socket/HTTP gateway, a separate package) is responsible for stamping it onto
-> events; filespace must never trust a principal a raw client supplied.
+## Authentication (in the core, not at a server)
+
+`enforce` answers *may principal P do this?* — **authorization**. It still trusts
+that the caller really is P. Turn on `authenticate` and filespace also answers
+*is the caller really P?* — **authentication** — by verifying a signature, with no
+server involved.
+
+```js
+import { attach, makeFileStore, newIdentity, signAction } from '@orbitalfoundation/filespace';
+
+const fs = attach(bus, { store: makeFileStore('.filespace/nodes.json'), enforce: true, authenticate: true });
+
+const macy = newIdentity();                                  // a secp256k1 keypair (the web3auth curve)
+await bus.resolve({ fs_claim:  signAction(macy, 'fs_claim',  { slug: '/macy' }) });
+await bus.resolve({ fs_create: signAction(macy, 'fs_create', { slug: '/macy/ces' }) });
+```
+
+Each write carries a signed envelope `auth: { nonce, exp, sig }`. The signature
+binds the **op + all args + nonce + exp**, and is verified against `principal` (a
+public key). Therefore:
+
+- **No private key, no action.** Passing `principal: <someone's pubkey>` without a
+  signature is rejected — identity is *proven*, not asserted.
+- **Tamper-evident.** Changing any arg after signing invalidates the signature.
+- **Replay-resistant.** `nonce` is single-use and `exp` bounds lifetime; a captured
+  envelope can't be resent.
+
+This is deliberately below any server. Not every deployment is remote, and a
+server should be a transport shim — not the bouncer. The `verify` function is
+pluggable (default secp256k1), and re-verifying every message is the default; a
+short-lived signed capability token (verified statelessly) is a natural layer on
+top when you want to avoid signing every op. The only thing a server genuinely
+adds is binding an authenticated identity to a live connection so you re-verify
+less often — an optimization, not the security boundary.
+
+> Authentication binds an owner to a **public key**. With `authenticate: true`,
+> claim an area with a key (`signAction(identity, 'fs_claim', …)`) so `owner`
+> is that pubkey; handle→pubkey areas seeded from disk are admin content and
+> aren't claimable by a key.
 
 ## Seeding — the shell-to-database bridge
 

@@ -17,6 +17,7 @@ import logger from '@orbitalfoundation/utils';
 import { makeNode } from './node.js';
 import { can, roleOf } from './policy.js';
 import { seedDir } from './seed.js';
+import { makeAuthGuard } from './auth.js';
 import { normalizeSlug, parentSlug, rootSlug, isRoot } from './paths.js';
 
 const SCHEMA = {
@@ -33,7 +34,13 @@ const SCHEMA = {
 
 const deny = (error) => ({ ok: false, error });
 
-export function makeService(store, { enforce = true } = {}) {
+export function makeService(store, { enforce = true, authenticate = false, verify, now } = {}) {
+  // When `authenticate` is on, every write must carry a valid signed envelope
+  // proving the caller holds the private key for the principal it claims. The
+  // guard is the bouncer; it runs before any authorization check.
+  const guard = authenticate ? makeAuthGuard({ verify, now }) : null;
+  const authed = (op, args) => (guard ? guard(op, args) : { ok: true });
+
   // The root area that governs a slug, used for inherited ownership/membership.
   async function governingArea(slug) {
     const root = rootSlug(slug);
@@ -57,7 +64,10 @@ export function makeService(store, { enforce = true } = {}) {
     // ---- writes ----
 
     // Claim a root area first-come. Succeeds only if the slug is free.
-    async claim({ slug, principal, policy = 'public', components = {} } = {}) {
+    async claim(args = {}) {
+      const a = authed('fs_claim', args);
+      if (!a.ok) return deny(a.error);
+      const { slug, principal, policy = 'public', components = {} } = args;
       if (!principal) return deny('principal required');
       if (!isRoot(slug)) return deny('claim is for root areas only (single path segment)');
       const node = makeNode({
@@ -77,7 +87,10 @@ export function makeService(store, { enforce = true } = {}) {
     },
 
     // Create a folder or content item inside an existing parent.
-    async create({ slug, principal, policy, components = {} } = {}) {
+    async create(args = {}) {
+      const a = authed('fs_create', args);
+      if (!a.ok) return deny(a.error);
+      const { slug, principal, policy, components = {} } = args;
       const s = normalizeSlug(slug);
       if (isRoot(s)) return deny('use claim for root areas');
       const parent = await store.get(parentSlug(s));
@@ -96,7 +109,10 @@ export function makeService(store, { enforce = true } = {}) {
       return { ok: true, node };
     },
 
-    async update({ slug, principal, components = {} } = {}) {
+    async update(args = {}) {
+      const a = authed('fs_update', args);
+      if (!a.ok) return deny(a.error);
+      const { slug, principal, components = {} } = args;
       const node = await store.get(slug);
       if (!node) return deny('not found');
       const area = await governingArea(slug);
@@ -107,7 +123,10 @@ export function makeService(store, { enforce = true } = {}) {
       return { ok: true, node };
     },
 
-    async remove({ slug, principal } = {}) {
+    async remove(args = {}) {
+      const a = authed('fs_delete', args);
+      if (!a.ok) return deny(a.error);
+      const { slug, principal } = args;
       const node = await store.get(slug);
       if (!node) return deny('not found');
       const area = await governingArea(slug);
@@ -116,7 +135,10 @@ export function makeService(store, { enforce = true } = {}) {
       return { ok: true, slug: normalizeSlug(slug) };
     },
 
-    async invite({ slug, principal, who, role = 'member' } = {}) {
+    async invite(args = {}) {
+      const a = authed('fs_invite', args);
+      if (!a.ok) return deny(a.error);
+      const { slug, principal, who, role = 'member' } = args;
       if (!who) return deny('who required');
       const node = await store.get(slug);
       if (!node) return deny('not found');
@@ -141,9 +163,9 @@ export function makeService(store, { enforce = true } = {}) {
 
 // Build the bus entity. createFilespace does not import the bus — it receives it
 // at dispatch time, so the same code is testable against a stub or the real bus.
-export function createFilespace({ store, enforce = true } = {}) {
+export function createFilespace({ store, enforce = true, authenticate = false, verify, now } = {}) {
   if (!store) throw new Error('createFilespace requires a store');
-  const service = makeService(store, { enforce });
+  const service = makeService(store, { enforce, authenticate, verify, now });
 
   const entity = {
     id: 'bus.filespace',

@@ -15,5 +15,6 @@ export { makeFileStore } from './store/file.js';
 export { seedDir } from './seed.js';
 export { makeNode } from './node.js';
 export { newIdentity, sign, verify } from './identity.js';
+export { signAction, makeAuthGuard, stableStringify } from './auth.js';
 export * as paths from './paths.js';
 export * as policy from './policy.js';
