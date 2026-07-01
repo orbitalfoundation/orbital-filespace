@@ -38,3 +38,14 @@ export function can(principal, verb, node, { area = null } = {}) {
   if (policy === 'protected') return verb === 'read';
   return false; // private: guests get nothing
 }
+
+// Read visibility, with inheritance. A node is readable by a guest only if
+// neither the node NOR its governing area is private — so a "public" item inside
+// a private area stays hidden. Owners and members always see their own space.
+export function canRead(principal, node, area = null) {
+  const role = roleOf(principal, node, area);
+  if (role === 'owner' || role === 'member') return true;
+  const areaPolicy = area?.policy ?? node?.policy ?? 'public';
+  const nodePolicy = node?.policy ?? 'public';
+  return areaPolicy !== 'private' && nodePolicy !== 'private';
+}

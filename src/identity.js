@@ -9,13 +9,14 @@
 //
 // Zero dependencies — node:crypto speaks secp256k1 natively.
 
-import { generateKeyPairSync, createSign, createVerify, createPublicKey } from 'node:crypto';
+import {
+  generateKeyPairSync, createSign, createVerify, createPublicKey, createPrivateKey,
+} from 'node:crypto';
 
 const encode = (message) => (typeof message === 'string' ? message : JSON.stringify(message));
 
-export function newIdentity() {
-  const { publicKey, privateKey } = generateKeyPairSync('ec', { namedCurve: 'secp256k1' });
-  const publicKeyHex = publicKey.export({ type: 'spki', format: 'der' }).toString('hex');
+function toIdentity(privateKey) {
+  const publicKeyHex = createPublicKey(privateKey).export({ type: 'spki', format: 'der' }).toString('hex');
   return {
     publicKey: publicKeyHex,
     privateKey,
@@ -23,6 +24,22 @@ export function newIdentity() {
       return sign(privateKey, message);
     },
   };
+}
+
+export function newIdentity() {
+  const { privateKey } = generateKeyPairSync('ec', { namedCurve: 'secp256k1' });
+  return toIdentity(privateKey);
+}
+
+// Persist / restore a keypair — used by the test keyring (a "hosted" keypair
+// store). In production a principal's key lives in their own wallet; this is only
+// so tooling can act as a user by holding their key locally.
+export function exportPrivateKeyPem(identity) {
+  return identity.privateKey.export({ type: 'pkcs8', format: 'pem' });
+}
+
+export function identityFromPrivateKeyPem(pem) {
+  return toIdentity(createPrivateKey(pem));
 }
 
 export function sign(privateKey, message) {

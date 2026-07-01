@@ -15,7 +15,7 @@
 import logger from '@orbitalfoundation/utils';
 
 import { makeNode } from './node.js';
-import { can, roleOf } from './policy.js';
+import { can, canRead, roleOf } from './policy.js';
 import { seedDir } from './seed.js';
 import { makeAuthGuard } from './auth.js';
 import { normalizeSlug, parentSlug, rootSlug, isRoot } from './paths.js';
@@ -29,6 +29,7 @@ const SCHEMA = {
   fs_update: true,
   fs_delete: true,
   fs_invite: true,
+  fs_set_policy: true,
   fs_seed: true,
 };
 
@@ -48,17 +49,45 @@ export function makeService(store, { enforce = true, authenticate = false, verif
     return (await store.get(root)) ?? null;
   }
 
+  // Establish who the reader is. A caller is only granted an identity on a read if
+  // they prove it (signed envelope, when authenticate is on); an unsigned or
+  // invalid identity claim is silently downgraded to an anonymous guest — never an
+  // error, so public browsing stays open while private access requires proof.
+  function readerOf(op, args) {
+    const principal = args?.principal ?? null;
+    if (!principal) return null;
+    if (!authenticate) return principal;
+    return guard(op, args).ok ? principal : null;
+  }
+
+  const readable = async (reader, node) =>
+    canRead(reader, node, await governingArea(node.slug));
+
   return {
-    // ---- reads ----
-    get(slug) {
-      return store.get(slug);
+    // ---- reads (privacy-gated) ----
+    async get(arg) {
+      const args = typeof arg === 'string' ? { slug: arg } : (arg ?? {});
+      const node = await store.get(args.slug);
+      if (!node) return null;
+      // return null (not a 403) when hidden, so existence itself doesn't leak
+      return (await readable(readerOf('fs_get_query', args), node)) ? node : null;
     },
-    list(slug) {
-      return store.children(slug);
+    async list(arg) {
+      const args = typeof arg === 'string' ? { slug: arg } : (arg ?? {});
+      const reader = readerOf('fs_list_query', args);
+      const kids = await store.children(args.slug);
+      const out = [];
+      for (const k of kids) if (await readable(reader, k)) out.push(k);
+      return out;
     },
-    find({ component, prefix, selector } = {}) {
-      if (component) return store.byComponent(component, { prefix });
-      return store.query(selector ?? {});
+    async find(args = {}) {
+      const reader = readerOf('fs_find_query', args);
+      const matches = args.component
+        ? await store.byComponent(args.component, { prefix: args.prefix })
+        : await store.query(args.selector ?? {});
+      const out = [];
+      for (const n of matches) if (await readable(reader, n)) out.push(n);
+      return out;
     },
 
     // ---- writes ----
@@ -150,6 +179,23 @@ export function makeService(store, { enforce = true, authenticate = false, verif
       return { ok: true, node };
     },
 
+    // Change a node's privacy. Distinct from update() (content) because changing
+    // policy is an administer action — owner only.
+    async setPolicy(args = {}) {
+      const a = authed('fs_set_policy', args);
+      if (!a.ok) return deny(a.error);
+      const { slug, principal, policy } = args;
+      if (!['public', 'protected', 'private'].includes(policy)) return deny('invalid policy');
+      const node = await store.get(slug);
+      if (!node) return deny('not found');
+      const area = await governingArea(slug);
+      if (enforce && !can(principal, 'administer', node, { area })) return deny('forbidden');
+      node.policy = policy;
+      node.updatedAt = Date.now();
+      await store.put(node);
+      return { ok: true, node };
+    },
+
     // Bootstrap/admin: load a public/ tree of manifests into the store.
     async seed({ dir, basePath = '/' } = {}) {
       if (!dir) return deny('dir required');
@@ -175,14 +221,15 @@ export function createFilespace({ store, enforce = true, authenticate = false, v
         bus.resolve?.({ schema: SCHEMA });
         return;
       }
-      if (event.fs_get_query) return service.get(event.fs_get_query.slug);
-      if (event.fs_list_query) return service.list(event.fs_list_query.slug);
+      if (event.fs_get_query) return service.get(event.fs_get_query);
+      if (event.fs_list_query) return service.list(event.fs_list_query);
       if (event.fs_find_query) return service.find(event.fs_find_query);
       if (event.fs_claim) return service.claim(event.fs_claim);
       if (event.fs_create) return service.create(event.fs_create);
       if (event.fs_update) return service.update(event.fs_update);
       if (event.fs_delete) return service.remove(event.fs_delete);
       if (event.fs_invite) return service.invite(event.fs_invite);
+      if (event.fs_set_policy) return service.setPolicy(event.fs_set_policy);
       if (event.fs_seed) return service.seed(event.fs_seed);
       return undefined;
     },

@@ -62,21 +62,24 @@ const kids = await bus.resolve({ fs_list_query: { slug: '/macy' } });
 
 ### Bus vocabulary
 
-Reads (return the value; no `principal` needed):
+Reads (privacy-gated — see [Permissions](#permissions); pass `principal` + a
+signed envelope to see private areas you belong to, else you read as an
+anonymous guest):
 
 | key | payload | returns |
 |---|---|---|
-| `fs_get_query`  | `{ slug }` | the node |
-| `fs_list_query` | `{ slug }` | direct children |
-| `fs_find_query` | `{ component, prefix }` or `{ selector }` | matching nodes |
+| `fs_get_query`  | `{ slug, principal?, auth? }` | the node, or `null` if hidden |
+| `fs_list_query` | `{ slug, principal?, auth? }` | direct children you may read |
+| `fs_find_query` | `{ component, prefix }` or `{ selector }` (+ `principal?, auth?`) | matching nodes you may read |
 
-Writes (carry a server-verified `principal`):
+Writes (carry a `principal`; a signed `auth` envelope when `authenticate` is on):
 
 | key | payload |
 |---|---|
 | `fs_claim`  | `{ slug, principal, policy?, components? }` — claim a root area |
 | `fs_create` | `{ slug, principal, policy?, components? }` — create a folder/content node |
-| `fs_update` | `{ slug, principal, components }` |
+| `fs_update` | `{ slug, principal, components }` — post/merge content |
+| `fs_set_policy` | `{ slug, principal, policy }` — change privacy (owner only) |
 | `fs_delete` | `{ slug, principal }` |
 | `fs_invite` | `{ slug, principal, who, role? }` |
 | `fs_seed`   | `{ dir, basePath? }` — load a manifest tree (bootstrap/admin) |
@@ -97,6 +100,12 @@ area, so membership granted on `/drwobbles` applies to everything beneath it.
 
 `enforce: false` skips these checks (the "allow-all" posture for early
 development). The rules live in [`src/policy.js`](src/policy.js) as pure functions.
+
+**Reads are gated too, with inheritance.** A `private` area is invisible to
+guests and non-members — `get` returns `null` (existence doesn't leak) and
+`list`/`find` filter it out. Privacy inherits: a `public` item inside a `private`
+area stays hidden. Inviting a member reveals the area to them. So `private` means
+*actually* private, not merely unwritable.
 
 ## Authentication (in the core, not at a server)
 
@@ -192,22 +201,51 @@ store, since embeddable stores are weak at full-text search. Until then, `memory
 and `file` keep the dependency surface at zero. The seam is the interface;
 extraction is a move, not a refactor.
 
-## CLI
+## CLI — a tool to exercise the whole thing
 
-The package is fully driveable from the console — no server required.
+The package is fully driveable from the console, with real security on by default
+(`enforce` + `authenticate`). It carries a local **keyring** so you can act as
+named users: `--as alice` loads alice's retained keypair and signs the action for
+her. (Normally each user holds their own key; the keyring is a testing
+convenience — a "hosted keypair" store. Private keys are plaintext on disk, so
+keep it out of git — the default lives under the git-ignored `.filespace/`.)
 
 ```sh
-npx filespace seed example/public
-npx filespace ls /
-npx filespace claim /macy --as macy
-npx filespace mk /macy/ces --as macy --enforce
-npx filespace invite /macy bob --as macy
-npx filespace find geo --prefix /drwobbles
-npx filespace dump
+# users — generate/retain keypairs so the CLI can sign as them
+npx filespace user new alice
+npx filespace user new bob
+npx filespace user list
+
+# areas & folders (writes need --as <user>)
+npx filespace claim /alice --as alice --policy private
+npx filespace mkdir /alice/journal --as alice
+npx filespace policy /alice protected --as alice        # change privacy (owner only)
+npx filespace set /alice/journal --as alice --json '{"about":{"label":"Diary"}}'
+npx filespace invite /alice bob --as alice --role member
+npx filespace rm /alice/journal --as alice
+
+# enumerate (add --as <user> to see private areas you belong to)
+npx filespace ls /                    # anonymous: public/protected only
+npx filespace ls /alice --as alice    # signed: sees private contents
+npx filespace get /alice --as bob
+npx filespace find geo --prefix /alice --as alice
+
+# admin / misc
+npx filespace seed example/public     # load a manifest tree
+npx filespace dump                    # raw store, ignoring privacy (debug)
+npx filespace nuke --yes [--keys]     # wipe nodes (and keyring with --keys)
+npx filespace demo                    # scripted end-to-end scenario
 ```
 
-Env: `FILESPACE_DB` (store path), `FILESPACE_PRINCIPAL` (default actor).
-Flags: `--as`, `--policy`, `--role`, `--enforce`.
+Every operation you'd want to exercise: **create users, claim areas, set
+privacy, drag content, invite participants, enumerate** — and each write is
+genuinely signed and each read genuinely privacy-filtered. `filespace demo` runs
+a full alice/bob/eve scenario (private area, invite, public post, policy flip) so
+you can see auth + policy + privacy working in one shot.
+
+Env: `FILESPACE_DB` (node store), `FILESPACE_KEYRING` (keypairs).
+Flags: `--as`, `--policy`, `--role`, `--json`, `--prefix`, `--insecure`
+(disable enforce+authenticate for quick poking).
 
 ## Identity helper
 
@@ -225,7 +263,8 @@ verify(id.publicKey, { claim: '/macy' }, sig); // true
 
 ```sh
 npm install   # links @orbitalfoundation/bus + utils from ../reference/orbital-bus
-npm test      # node:test — paths, policy, store contract, seed, bus integration, identity
+npm test      # node:test — paths, policy, store contract, seed, bus integration,
+              #             identity, authentication, privacy (36 cases)
 ```
 
 ## License
