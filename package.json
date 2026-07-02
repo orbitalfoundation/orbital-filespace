@@ -10,7 +10,7 @@
   "files": [
     "src",
     "bin",
-    "example",
+    "public",
     "README.md"
   ],
   "engines": {

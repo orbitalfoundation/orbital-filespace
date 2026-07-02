@@ -1,48 +1,42 @@
-// seed — the bridge between a shell programmer and the live store. Walks a
-// public/ tree starting from its root manifest, visiting only folders the
-// manifest declares in `children`. Undeclared folders are invisible by
-// construction — no skip-lists.
+// seed — the manifest reader: the bridge between a shell programmer and the
+// live store. There is ONE manifest convention, used by both lazy hydration and
+// the eager `seed` sweep (which is just recursive hydration):
 //
-// A manifest is info.json / info.js / manifest.json / manifest.js and may be:
+//   - Every folder may carry info.js / info.json (or manifest.js / manifest.json).
+//   - A manifest declares the folder's own node and names its children — either
+//     as explicit pointer declarations ({ slug, hydrated: false }) or via
+//     `children: ["name", ...]` sugar, which filespace expands into pointers.
+//   - Undeclared folders are invisible by construction: filespace only loads a
+//     child's manifest if its parent declared it. No skip-lists, no probing.
+//
+//   .js  manifests are loaded through the @orbitalfoundation/bus loader — each
+//        named export is dispatched as a bus event; filespace ingests the
+//        { filespace: { seed: {...} } } shaped ones. Real JavaScript: loops,
+//        imports, computed declarations.
+//   .json manifests are the plain "pile of declarations" flavor; filespace reads
+//        them here and feeds the same seed events (via the bus when bound).
+//
+// A JSON manifest may be:
 //   - a single entity              { slug, components, ... }
 //   - an array of entities         [ {...}, {...} ]
 //   - a container                  { entities|nodes|items: [...], children: ["sub"] }
 //
-// Invariant: seeding NEVER clobbers a runtime-origin node. Disk manifests are
-// initial conditions; once a node has been edited live, the live state wins. So
-// re-running the seed is always safe and idempotent against admin content.
+// Invariant (enforced by filespace's ingest): seeding NEVER clobbers a
+// runtime-origin node, and never downgrades a hydrated node to a pointer. Disk
+// manifests are initial conditions; the live store is the source of truth.
 
 import { readFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { pathToFileURL } from 'node:url';
-import { makeNode } from './node.js';
 import { normalizeSlug } from './paths.js';
 
-const MANIFEST_NAMES = ['info.js', 'info.json', 'manifest.js', 'manifest.json'];
+export const MANIFEST_NAMES = ['info.js', 'info.json', 'manifest.js', 'manifest.json'];
 
-function normalizeManifest(parsed) {
-  if (Array.isArray(parsed)) return { entities: parsed, children: [] };
-  if (!parsed || typeof parsed !== 'object') return { entities: [], children: [] };
-  const entities = parsed.entities ?? parsed.nodes ?? parsed.items ?? (parsed.slug ? [parsed] : []);
-  const children = parsed.children ?? [];
-  return { entities, children };
-}
-
-async function readManifest(dir, warn) {
+// The manifest file present in a folder, if any: { path, kind: 'js' | 'json' }.
+export function findManifest(dir) {
   for (const fname of MANIFEST_NAMES) {
-    const p = join(dir, fname);
-    if (!existsSync(p)) continue;
-    try {
-      if (fname.endsWith('.json')) {
-        return normalizeManifest(JSON.parse(await readFile(p, 'utf8')));
-      }
-      const mod = await import(`${pathToFileURL(p).href}?t=${Date.now()}`);
-      return normalizeManifest(mod.default ?? mod);
-    } catch (err) {
-      warn(`[seed] malformed manifest ${p}: ${err.message}`);
-      return null;
-    }
+    const path = join(dir, fname);
+    if (existsSync(path)) return { path, kind: fname.endsWith('.json') ? 'json' : 'js' };
   }
   return null;
 }
@@ -53,43 +47,22 @@ function resolveSlug(slug, base) {
   return normalizeSlug(base === '/' ? `/${slug}` : `${base}/${slug}`);
 }
 
-export async function seedDir(store, rootDir, { basePath = '/', log = () => {}, warn = console.warn } = {}) {
-  const stats = { visited: 0, upserted: 0, skipped: 0 };
-
-  async function walk(dir, base) {
-    const manifest = await readManifest(dir, warn);
-    stats.visited++;
-    if (!manifest) return;
-
-    for (const ent of manifest.entities) {
-      const slug = resolveSlug(ent.slug, base);
-      if (!slug) continue;
-      const existing = await store.get(slug);
-      if (existing && existing.origin === 'runtime') {
-        stats.skipped++; // live edits win over the seed
-        continue;
-      }
-      await store.put(
-        makeNode({
-          slug,
-          owner: ent.owner ?? null,
-          policy: ent.policy ?? 'public',
-          members: ent.members ?? [],
-          components: ent.components ?? {},
-          origin: 'seed',
-          id: existing?.id ?? null,
-          createdAt: existing?.createdAt ?? null,
-        }),
-      );
-      stats.upserted++;
-    }
-
-    for (const child of manifest.children) {
-      await walk(join(dir, child), resolveSlug(child, base));
-    }
+// Read a .json manifest into seed declarations with slugs resolved against
+// `base` (the folder's own slug). Top-level `children` become pointer
+// declarations; entity-level `children` sugar is left for ingest to expand.
+export async function readJsonManifest(path, base = '/') {
+  const parsed = JSON.parse(await readFile(path, 'utf8'));
+  const shaped = Array.isArray(parsed) ? { entities: parsed } : parsed && typeof parsed === 'object' ? parsed : {};
+  const entities = shaped.entities ?? shaped.nodes ?? shaped.items ?? (shaped.slug ? [shaped] : []);
+  const decls = [];
+  for (const ent of entities) {
+    const slug = resolveSlug(ent.slug, base);
+    if (!slug) continue;
+    decls.push({ ...ent, slug });
   }
-
-  await walk(rootDir, basePath);
-  log(`[seed] visited ${stats.visited} folder(s), upserted ${stats.upserted}, skipped ${stats.skipped}`);
-  return stats;
+  for (const name of shaped.children ?? []) {
+    const slug = resolveSlug(name, base);
+    if (slug) decls.push({ slug, hydrated: false });
+  }
+  return decls;
 }

@@ -8,7 +8,7 @@
 // to a heavier adapter — or extracting all adapters into a separate
 // orbital-database package — never touches filespace itself.
 
-import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
+import { readFileSync, writeFileSync, renameSync, mkdirSync, existsSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { makeMemoryStore } from './memory.js';
 
@@ -16,15 +16,22 @@ export function makeFileStore(path) {
   const store = makeMemoryStore({
     onChange: (docs) => {
       mkdirSync(dirname(path), { recursive: true });
-      writeFileSync(path, JSON.stringify(docs, null, 2));
+      // write-then-rename so a crash mid-write can never corrupt the store
+      const tmp = `${path}.tmp`;
+      writeFileSync(tmp, JSON.stringify(docs, null, 2));
+      renameSync(tmp, path);
     },
   });
 
   if (existsSync(path)) {
     try {
       for (const n of JSON.parse(readFileSync(path, 'utf8'))) store._seed(n);
-    } catch {
-      // a corrupt file is non-fatal — start empty rather than crash
+    } catch (err) {
+      // a corrupt file is non-fatal, but NEVER silently discarded — preserve it
+      // and say so loudly, or a bad parse would quietly wipe the whole space
+      const backup = `${path}.corrupt-${Date.now()}`;
+      renameSync(path, backup);
+      console.warn(`[filespace] corrupt store ${path} (${err.message}) — preserved as ${backup}, starting empty`);
     }
   }
 

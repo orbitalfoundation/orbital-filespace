@@ -7,6 +7,7 @@
 //   delete(slug)              -> boolean
 //   children(slug)            -> node[]          (direct children only)
 //   byComponent(name, {prefix}) -> node[]
+//   byMember(principal)       -> node[]          (owned by, or member of)
 //   query(selector)           -> node[]          (generic document query)
 //   claimRoot(node)           -> node            (atomic first-come; throws if taken)
 //   all()                     -> node[]
@@ -80,6 +81,13 @@ export function makeMemoryStore({ onChange = null } = {}) {
     async byComponent(name, { prefix = null } = {}) {
       return [...bySlug.values()]
         .filter((n) => n.components && name in n.components && withPrefix(n, prefix))
+        .map(clone)
+        .sort(bySlugCmp);
+    },
+
+    async byMember(principal) {
+      return [...bySlug.values()]
+        .filter((n) => n.owner === principal || (n.members ?? []).some((m) => m.who === principal))
         .map(clone)
         .sort(bySlugCmp);
     },

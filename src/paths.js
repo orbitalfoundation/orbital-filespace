@@ -16,6 +16,16 @@ export function segments(slug) {
   return s === '/' ? [] : s.slice(1).split('/');
 }
 
+// A segment must start with a letter/digit — which also forbids '.', '..' and
+// dotfiles — and stay within a filesystem/URL-safe charset. Slugs map to
+// directories under a manifest root, so this is a security boundary, not taste.
+const SEGMENT = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+
+export function isValidSlug(slug) {
+  const s = normalizeSlug(slug);
+  return s === '/' || segments(s).every((seg) => SEGMENT.test(seg));
+}
+
 export function parentSlug(slug) {
   const segs = segments(slug);
   if (segs.length <= 1) return '/';

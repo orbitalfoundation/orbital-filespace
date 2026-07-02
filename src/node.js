@@ -19,6 +19,9 @@ export function makeNode({
   members = [],
   components = {},
   origin = 'runtime',
+  // hydrated = its own manifest has been loaded, so its children are known. A node
+  // named only as a child pointer by its parent is present but not yet hydrated.
+  hydrated = true,
   id = null,
   createdAt = null,
 } = {}) {
@@ -31,6 +34,7 @@ export function makeNode({
     members,
     components,
     origin,
+    hydrated,
     createdAt: createdAt ?? now,
     updatedAt: now,
   };

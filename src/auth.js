@@ -1,24 +1,22 @@
-// auth — authentication in the core, not at the server. A write action may carry
-// a signed envelope proving the caller holds the private key for the `principal`
-// it claims. filespace verifies it directly, so it doesn't merely *authorize*
-// (may principal P do this?) but *authenticates* (is the caller really P?).
+// auth — authentication in the core, not at the server. A request may carry a
+// signed envelope proving the caller holds the private key for the `principal` it
+// claims. filespace verifies it directly, so it doesn't merely *authorize* (may
+// principal P do this?) but *authenticates* (is the caller really P?).
 //
-// This deliberately lives below any server: not every deployment is remote, and a
-// server should be a transport shim, not the bouncer. Verification is a property
-// of the message, so it travels with the message.
+// This lives below any server: not every deployment is remote, and a server
+// should be a transport shim, not the bouncer. Verification is a property of the
+// message, so it travels with the message.
 //
-// Envelope: an action's args carry `auth: { nonce, exp, sig }`.
-//   - the signed message binds op + all args (incl. principal) + nonce + exp
-//   - `sig` is verified against `principal` (a public key)
-//   - `exp` bounds the lifetime; `nonce` is single-use → replay is rejected
-//
-// The signer and the verifier MUST build the message identically — both go
-// through signingString(), so the two never drift.
+// A request is { op, ...params, auth?: { nonce, exp, sig } }. The signature binds
+// op + params (incl. principal) + nonce + exp, is verified against `principal` (a
+// public key), and each nonce is single-use so a captured request can't be
+// replayed. The signer and verifier both go through signingString(), so they
+// never drift.
 
 import { verify as verifySecp256k1 } from './identity.js';
 
-// Deterministic JSON: object keys sorted recursively, so the signer and verifier
-// produce byte-identical messages regardless of key insertion order.
+// Deterministic JSON: keys sorted recursively, so signer and verifier produce
+// byte-identical messages regardless of insertion order.
 export function stableStringify(value) {
   return JSON.stringify(sortDeep(value));
 }
@@ -33,34 +31,46 @@ function sortDeep(v) {
   return v;
 }
 
-const stripAuth = (args) => {
-  const { auth, ...rest } = args ?? {};
-  return rest;
-};
-
-// The exact bytes that get signed/verified for an action.
-function signingString(op, argsWithoutAuth, nonce, exp) {
-  return stableStringify({ op, args: argsWithoutAuth, nonce, exp });
+// The params of a request are everything except the op and the envelope.
+export function requestParams(req) {
+  const { op, auth, ...params } = req ?? {};
+  return params;
 }
 
-// Client helper: wrap an action's args in a signed envelope.
-//   signAction(identity, 'fs_create', { slug: '/macy/ces' })
-// `identity` is { publicKey, sign } from newIdentity(). The caller's own
-// principal is set from the identity, so it cannot be spoofed by the args.
-export function signAction(identity, op, args = {}, { ttlMs = 30_000, now = Date.now, nonce = randomNonce() } = {}) {
-  const rest = { ...args, principal: identity.publicKey };
-  const exp = now() + ttlMs;
-  const sig = identity.sign(signingString(op, rest, nonce, exp));
-  return { ...rest, auth: { nonce, exp, sig } };
+// The exact bytes signed/verified for a request.
+function signingString(op, params, nonce, exp) {
+  return stableStringify({ op, params, nonce, exp });
 }
 
 function randomNonce() {
   return crypto.randomUUID();
 }
 
-// Server/core side: build a guard that authenticates an action's envelope.
-// `verify(principalPublicKey, message, signatureHex) -> boolean` is pluggable;
-// the default is secp256k1, the curve web3auth / Ethereum wallets use.
+// Client helper: build a signed request. The caller's principal is taken from the
+// identity, so it can't be spoofed by the args.
+//   signAction(alice, 'claim', { slug: '/alice' })
+//   -> { op: 'claim', slug: '/alice', principal: <alice pub>, auth: { nonce, exp, sig } }
+export function signAction(identity, op, args = {}, { ttlMs = 30_000, now = Date.now, nonce = randomNonce() } = {}) {
+  const params = { ...args, principal: identity.publicKey };
+  const exp = now() + ttlMs;
+  const sig = identity.sign(signingString(op, params, nonce, exp));
+  return { op, ...params, auth: { nonce, exp, sig } };
+}
+
+// Envelope builders — the single reserved bus key, split query (reads) vs command
+// (writes). Reads may be anonymous (no identity → no signature).
+export function fsCommand(identity, op, args = {}, opts) {
+  return { filespace: { command: signAction(identity, op, args, opts) } };
+}
+
+export function fsQuery(op, args = {}, identity = null, opts) {
+  const request = identity ? signAction(identity, op, args, opts) : { op, ...args };
+  return { filespace: { query: request } };
+}
+
+// Core side: authenticate a request's envelope. `verify(principalPublicKey,
+// message, signatureHex) -> boolean` is pluggable; default is secp256k1, the
+// curve web3auth / Ethereum wallets use.
 export function makeAuthGuard({ verify = verifySecp256k1, now = Date.now, maxFutureMs = 5 * 60 * 1000 } = {}) {
   const seen = new Map(); // nonce -> exp, pruned once expired
 
@@ -68,10 +78,13 @@ export function makeAuthGuard({ verify = verifySecp256k1, now = Date.now, maxFut
     for (const [n, e] of seen) if (e < t) seen.delete(n);
   }
 
-  return function check(op, args) {
-    const principal = args?.principal;
-    const auth = args?.auth;
+  return function check(req) {
+    const params = requestParams(req);
+    const principal = params.principal;
+    const op = req?.op;
+    const auth = req?.auth;
     if (!principal) return { ok: false, error: 'principal required' };
+    if (!op) return { ok: false, error: 'op required' };
     if (!auth || !auth.sig || !auth.nonce || typeof auth.exp !== 'number') {
       return { ok: false, error: 'signed envelope required (nonce, exp, sig)' };
     }
@@ -85,7 +98,7 @@ export function makeAuthGuard({ verify = verifySecp256k1, now = Date.now, maxFut
 
     let valid = false;
     try {
-      valid = verify(principal, signingString(op, stripAuth(args), auth.nonce, auth.exp), auth.sig);
+      valid = verify(principal, signingString(op, params, auth.nonce, auth.exp), auth.sig);
     } catch {
       return { ok: false, error: 'bad signature' };
     }

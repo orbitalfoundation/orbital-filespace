@@ -1,5 +1,5 @@
 // policy — the permission rules. Pure functions: given a principal, a verb, the
-// target node and (optionally) its governing root area, decide allow/deny.
+// target node and its ancestor chain, decide allow/deny.
 //
 // This is the ruleset the edge auth-gateway consults. Keeping it pure and
 // separately testable is the point: the socket gateway can run "allow-all" today
@@ -7,45 +7,54 @@
 //
 // Verbs:
 //   read          see the node and enumerate its children
-//   post          add messages / mutate the node's own content
+//   post          contribute to the node's stream (messages — the streams layer)
+//   update        mutate the node's own components
 //   create-child  create a sub-folder or content item under it
 //   invite        grant membership to another principal
-//   administer    delete, change policy, transfer ownership
+//   administer    delete, move, change policy, transfer ownership
 //
-// Roles are computed from the node AND its root area, so membership granted on
-// '/anselm' applies to everything beneath it.
+// Roles are computed from the node AND its whole ancestor chain, so membership
+// granted anywhere on the path applies to everything beneath it: invited to
+// '/anselm/project', you are a member of '/anselm/project/photos' too.
+//
+// Guests are read-only. 'post' is the one guest-writable verb (public areas
+// only) and is reserved for the streams layer — mutating a node itself
+// ('update') always requires membership, so a public folder can't be defaced.
 
-export const VERBS = ['read', 'post', 'create-child', 'invite', 'administer'];
+export const VERBS = ['read', 'post', 'update', 'create-child', 'invite', 'administer'];
 
-export function roleOf(principal, node, area = null) {
+// `chain` is the node's ancestors (any order); membership is the union.
+export function roleOf(principal, node, chain = []) {
   if (!principal) return 'guest';
-  const owners = [node?.owner, area?.owner].filter(Boolean);
-  if (owners.includes(principal)) return 'owner';
-  const members = [...(node?.members ?? []), ...(area?.members ?? [])];
-  const m = members.find((x) => x.who === principal);
-  if (m) return m.role === 'owner' ? 'owner' : 'member';
-  return 'guest';
+  const nodes = [node, ...chain].filter(Boolean);
+  let member = false;
+  for (const n of nodes) {
+    if (n.owner === principal) return 'owner';
+    const m = (n.members ?? []).find((x) => x.who === principal);
+    if (m?.role === 'owner') return 'owner';
+    if (m) member = true;
+  }
+  return member ? 'member' : 'guest';
 }
 
-export function can(principal, verb, node, { area = null } = {}) {
-  const role = roleOf(principal, node, area);
+// Read visibility, with inheritance: a guest may read only if neither the node
+// nor ANY ancestor is private — a "public" item inside a private area stays
+// hidden. Owners and members always see their own space.
+export function canRead(principal, node, chain = []) {
+  const role = roleOf(principal, node, chain);
+  if (role !== 'guest') return true;
+  return [node, ...chain].filter(Boolean).every((n) => (n.policy ?? 'public') !== 'private');
+}
+
+export function can(principal, verb, node, { chain = [] } = {}) {
+  const role = roleOf(principal, node, chain);
   if (role === 'owner') return true;
   if (role === 'member') return verb !== 'administer';
 
-  // guest — gated by the node's policy
-  const policy = node?.policy ?? 'public';
-  if (policy === 'public') return verb === 'read' || verb === 'post';
-  if (policy === 'protected') return verb === 'read';
-  return false; // private: guests get nothing
-}
-
-// Read visibility, with inheritance. A node is readable by a guest only if
-// neither the node NOR its governing area is private — so a "public" item inside
-// a private area stays hidden. Owners and members always see their own space.
-export function canRead(principal, node, area = null) {
-  const role = roleOf(principal, node, area);
-  if (role === 'owner' || role === 'member') return true;
-  const areaPolicy = area?.policy ?? node?.policy ?? 'public';
-  const nodePolicy = node?.policy ?? 'public';
-  return areaPolicy !== 'private' && nodePolicy !== 'private';
+  // guest — read-only, gated by privacy inheritance; 'post' (streams) is the
+  // single exception, on public nodes only.
+  if (!canRead(principal, node, chain)) return false;
+  if (verb === 'read') return true;
+  if (verb === 'post') return (node?.policy ?? 'public') === 'public';
+  return false;
 }

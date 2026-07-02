@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { makeMemoryStore } from '../src/store/memory.js';
@@ -32,6 +32,14 @@ function contract(name, makeStore) {
     assert.deepEqual(found.map((n) => n.slug), ['/drwobbles/a', '/drwobbles/a/deep']);
   });
 
+  test(`${name}: byMember finds owned and membered nodes`, async () => {
+    const s = makeStore();
+    await s.put(makeNode({ slug: '/mine', owner: 'alice' }));
+    await s.put(makeNode({ slug: '/shared', owner: 'bob', members: [{ who: 'alice', role: 'member' }] }));
+    await s.put(makeNode({ slug: '/other', owner: 'bob' }));
+    assert.deepEqual((await s.byMember('alice')).map((n) => n.slug), ['/mine', '/shared']);
+  });
+
   test(`${name}: claimRoot is first-come`, async () => {
     const s = makeStore();
     const ok = await s.claimRoot(makeNode({ slug: '/macy', owner: 'macy' }));
@@ -61,6 +69,28 @@ test('file: persists across reopen', async () => {
     const node = await b.get('/drwobbles');
     assert.equal(node.owner, 'drwobbles');
     assert.equal(node.components.about.label, 'A');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('file: a corrupt store is preserved loudly, never silently wiped', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'filespace-corrupt-'));
+  const path = join(dir, 'nodes.json');
+  try {
+    writeFileSync(path, '{ this is not json');
+    const warnings = [];
+    const origWarn = console.warn;
+    console.warn = (m) => warnings.push(String(m));
+    let store;
+    try {
+      store = makeFileStore(path);
+    } finally {
+      console.warn = origWarn;
+    }
+    assert.deepEqual(await store.all(), []); // starts empty…
+    assert.ok(readdirSync(dir).some((f) => f.startsWith('nodes.json.corrupt-'))); // …but the bytes survive
+    assert.ok(warnings.some((w) => w.includes('corrupt'))); // …and it says so
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
